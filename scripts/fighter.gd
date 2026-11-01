@@ -26,56 +26,81 @@ const DODGE_GROUND_CD := 40
 const BUF := 6  # сколько кадров помнится нажатие (буфер ввода)
 const BUFFERED := ["j", "atk", "spc", "sh"]
 
-static var CHARS := [
-	# sprite: кадры в ряд (fw×fh), anchor — точка между ног внутри кадра, anims: [файл, кадров, fps, кадр удара]
-	# jumps — прыжков в воздухе (плюс один с земли)
-	{"name": "Селина", "col": Color("f2c14e"), "dark": Color("2a2f5c"), "vfx": "selina",
-		"speed": 7.0, "air": 6.2, "jump": 14.0, "djump": 12.5, "jumps": 2, "weight": 0.9, "power": 0.95,
-		"fall": 12.0, "recover": 16.5, "acc": "",
-		"portrait": ["res://assets/characters/selina/portrait.png", Rect2(120, 30, 220, 220)],
-		"sprite": {"fw": 274, "fh": 164, "anchor": Vector2(80, 158), "scale": 0.56, "smooth": true, "anims": {
-			"idle": ["res://assets/characters/selina/idle.png", 7, 9.0, 0],
-			"run": ["res://assets/characters/selina/run.png", 8, 14.0, 0],
-			"jump": ["res://assets/characters/selina/jump.png", 2, 6.0, 0],
-			"fall": ["res://assets/characters/selina/fall.png", 2, 6.0, 0],
-			"dodge": ["res://assets/characters/selina/dodge.png", 3, 0.0, 0],
-			"attack": ["res://assets/characters/selina/attack.png", 5, 0.0, 2],
-			"attack2": ["res://assets/characters/selina/attack2.png", 5, 0.0, 2],
-			"hit": ["res://assets/characters/selina/hit.png", 3, 8.0, 0],
-		}}},
-	{"name": "Акане", "col": Color("e0245e"), "dark": Color("3a2430"), "vfx": "crimson",
-		"speed": 6.4, "air": 5.8, "jump": 14.5, "djump": 13.0, "jumps": 2, "weight": 1.05, "power": 1.08,
-		"fall": 13.0, "recover": 17.0, "acc": "",
-		"portrait": ["res://assets/characters/crimson/portrait.png", Rect2(235, 70, 200, 200)],
-		"sprite": {"fw": 255, "fh": 236, "anchor": Vector2(146, 212), "scale": 0.6, "smooth": true, "anims": {
-			"idle": ["res://assets/characters/crimson/idle.png", 6, 8.0, 0],
-			"run": ["res://assets/characters/crimson/run.png", 6, 12.0, 0],
-			"jump": ["res://assets/characters/crimson/jump.png", 2, 6.0, 0],
-			"fall": ["res://assets/characters/crimson/fall.png", 2, 6.0, 0],
-			"dodge": ["res://assets/characters/crimson/dodge.png", 3, 0.0, 0],
-			"attack": ["res://assets/characters/crimson/attack.png", 4, 0.0, 2],
-			"attack2": ["res://assets/characters/crimson/attack2.png", 5, 0.0, 1],
-			"hit": ["res://assets/characters/crimson/hit.png", 3, 8.0, 0],
-		}}},
-]
-
-# s — разгон, a — активные кадры, e — восстановление; box — хитбокс относительно ног (x вперёд по взгляду)
+# цифры бойцов и их приёмов лежат в data/chars/*.cfg (по файлу на бойца), здесь только загрузка
+const CHAR_FILES := ["res://data/chars/selina.cfg", "res://data/chars/crimson.cfg"]
 # лёгкие: n/s/d light (земля), nair/sair/dair (воздух); тяжёлые: nsig/ssig/dsig (земля, заряд),
 # rec — восстановление, sheavy — рывок в воздухе, gp — удар по земле с высоты
-static var MOVES := {
-	"nlight": {"s": 4, "a": 4, "e": 8, "dmg": 7, "kb": 6.0, "sc": 0.07, "ang": 70.0, "box": Rect2(-6, -112, 62, 54)},
-	"slight": {"s": 5, "a": 4, "e": 9, "dmg": 8, "kb": 7.0, "sc": 0.12, "ang": 30.0, "box": Rect2(16, -62, 64, 32)},
-	"dlight": {"s": 5, "a": 6, "e": 9, "dmg": 7, "kb": 6.0, "sc": 0.08, "ang": 62.0, "box": Rect2(6, -28, 72, 28)},
-	"nair": {"s": 4, "a": 6, "e": 8, "dmg": 8, "kb": 6.0, "sc": 0.12, "ang": 55.0, "box": Rect2(-42, -86, 84, 84)},
-	"sair": {"s": 5, "a": 5, "e": 9, "dmg": 9, "kb": 7.0, "sc": 0.16, "ang": 35.0, "box": Rect2(14, -76, 60, 50)},
-	"dair": {"s": 6, "a": 6, "e": 10, "dmg": 9, "kb": 6.0, "sc": 0.10, "ang": -60.0, "box": Rect2(-26, -20, 52, 44)},
-	"nsig": {"s": 14, "a": 6, "e": 24, "dmg": 16, "kb": 9.0, "sc": 0.30, "ang": 85.0, "box": Rect2(-50, -132, 100, 84), "charge": true},
-	"ssig": {"s": 16, "a": 6, "e": 24, "dmg": 18, "kb": 9.0, "sc": 0.34, "ang": 38.0, "box": Rect2(14, -72, 84, 52), "charge": true},
-	"dsig": {"s": 14, "a": 8, "e": 24, "dmg": 15, "kb": 8.0, "sc": 0.30, "ang": 28.0, "box": Rect2(-88, -42, 176, 42), "charge": true},
-	"rec": {"s": 4, "a": 14, "e": 8, "dmg": 9, "kb": 7.0, "sc": 0.12, "ang": 80.0, "box": Rect2(-30, -104, 60, 104)},
-	"sheavy": {"s": 8, "a": 12, "e": 16, "dmg": 12, "kb": 8.0, "sc": 0.24, "ang": 35.0, "box": Rect2(0, -72, 58, 58)},
-	"gp": {"s": 8, "a": 14, "e": 22, "dmg": 14, "kb": 8.0, "sc": 0.26, "ang": 70.0, "box": Rect2(-38, -32, 76, 42)},
-}
+const MOVE_NAMES := ["nlight", "slight", "dlight", "nair", "sair", "dair", "nsig", "ssig", "dsig", "rec", "sheavy", "gp"]
+const MOVE_KEYS := ["s", "a", "e", "dmg", "kb", "sc", "ang", "box"]
+static var CHARS: Array = []
+static var data_mtime := {}
+
+
+## Читает файлы бойцов. Уже загруженные словари обновляются на месте — бойцы на арене сразу
+## получают новые цифры. Возвращает текст ошибки ("" — всё хорошо); файл с ошибкой не применяется.
+static func load_chars() -> String:
+	var err := ""
+	for i in CHAR_FILES.size():
+		var path: String = CHAR_FILES[i]
+		data_mtime[path] = FileAccess.get_modified_time(path)
+		var r := _read_char(path)
+		if r[1] != "":
+			err = "%s: %s" % [path.get_file(), r[1]]
+			push_error(err)
+			if i < CHARS.size():
+				continue
+		if i < CHARS.size():
+			CHARS[i].clear()
+			CHARS[i].merge(r[0])
+		else:
+			CHARS.append(r[0])
+	return err
+
+
+## true, если какой-то файл бойца сохранили после последней загрузки.
+static func data_changed() -> bool:
+	for path in CHAR_FILES:
+		if FileAccess.get_modified_time(path) != data_mtime.get(path, 0):
+			return true
+	return false
+
+
+static func _read_char(path: String) -> Array:
+	var cf := ConfigFile.new()
+	if cf.load(path) != OK:
+		return [{}, "ошибка в записи файла (проверь скобки, кавычки, знаки =)"]
+	for sec in ["char", "stats", "sprite", "anims"]:
+		if not cf.has_section(sec):
+			return [{}, "нет раздела [%s]" % sec]
+	var c := {"moves": {}}
+	for sec in ["char", "stats"]:
+		for k in cf.get_section_keys(sec):
+			c[k] = cf.get_value(sec, k)
+	c.col = Color(c.col)
+	c.dark = Color(c.dark)
+	c.portrait = [c.portrait, c.face]
+	var sp := {"anims": {}}
+	for k in cf.get_section_keys("sprite"):
+		sp[k] = cf.get_value("sprite", k)
+	for k in cf.get_section_keys("anims"):
+		sp.anims[k] = cf.get_value("anims", k)
+	c.sprite = sp
+	for mn in MOVE_NAMES:
+		var sec: String = "move." + mn
+		if not cf.has_section(sec):
+			return [{}, "нет приёма [%s]" % sec]
+		var m := {}
+		for k in cf.get_section_keys(sec):
+			m[k] = cf.get_value(sec, k)
+		for k in MOVE_KEYS:
+			if not m.has(k):
+				return [{}, "в [%s] нет %s" % [sec, k]]
+		if not m.box is Rect2:
+			return [{}, "в [%s] box должен быть Rect2(x, y, ш, в)" % sec]
+		c.moves[mn] = m
+	return [c, ""]
+
+
 const HEAVIES := ["nsig", "ssig", "dsig", "rec", "sheavy", "gp"]
 
 var game
@@ -123,6 +148,8 @@ var clinging := false
 var buf := {}
 var hop_cut := false
 var prev_pos := Vector2.ZERO  # позиция на прошлом тике — для плавной отрисовки
+var base_pct := 0  # с каким уроном боец появляется (тренировка)
+var respawn_inv := 150  # кадров неуязвимости после появления
 
 
 func _init(g, i: int, c: Dictionary, is_cpu: bool, st: int) -> void:
@@ -132,8 +159,12 @@ func _init(g, i: int, c: Dictionary, is_cpu: bool, st: int) -> void:
 	cpu = is_cpu
 	stocks = st
 	facing = 1 if i == 0 else -1
-	spawn(Vector2(470 if i == 0 else 810, MAIN.position.y))
+	spawn(start_pos())
 	inv = 0
+
+
+func start_pos() -> Vector2:
+	return Vector2(470 if id == 0 else 810, MAIN.position.y)
 
 
 func spawn(p: Vector2) -> void:
@@ -147,11 +178,11 @@ func spawn(p: Vector2) -> void:
 	atk = {}
 	hitstun = 0
 	freeze = 0
-	inv = 150
+	inv = respawn_inv
 	stun = 0
 	land_lag = 0
 	drop = 0
-	percent = 0
+	percent = base_pct
 	dead = false
 	respawn = 0
 	ff = false
@@ -438,7 +469,7 @@ func heavy(inp: Dictionary, dir: int, g: bool) -> void:
 
 func start_atk(k: String) -> void:
 	dash_t = 0
-	atk = {"k": k, "m": MOVES[k], "t": 0, "c": 0, "hit": [], "air": not on_ground}
+	atk = {"k": k, "m": ch.moves[k], "t": 0, "c": 0, "hit": [], "air": not on_ground}
 
 
 func step_attack(inp: Dictionary, dir: int, g: bool) -> bool:
@@ -574,6 +605,29 @@ func on_land(impact: float) -> void:
 
 
 # ---------------- ИИ ----------------
+
+## Манекен в тренировке: stand — стоит, jump — прыгает, dodge — уклоняется от замаха,
+## attack — бьёт, если соперник рядом, cpu — обычный ИИ.
+func dummy_input(foe, mode: String, lvl: int) -> Dictionary:
+	if dead or foe == null:
+		return {}
+	var o := {}
+	match mode:
+		"jump":
+			if on_ground and anim % 80 == 40:
+				o["j"] = true
+		"dodge":
+			if not foe.atk.is_empty() and foe.atk.t <= foe.atk.m.s + 1 and pos.distance_to(foe.pos) < 170:
+				o["sh"] = true
+		"attack":
+			var dx: float = foe.pos.x - pos.x
+			if absf(dx) < 95 and absf(foe.pos.y - pos.y) < 80 and anim % 50 == 0:
+				_go(o, dx)
+				o["atk"] = true
+		"cpu":
+			return ai_input(foe, lvl)
+	return o
+
 
 func ai_input(foe, lvl: int) -> Dictionary:
 	if dead:

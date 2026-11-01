@@ -77,6 +77,16 @@ var lobby_status := ""
 var host_ips: Array = []
 var ip_edit: LineEdit
 var net_test := false
+# режим разработчика (F1) и тренировка
+const DUMMY_MODES := [["stand", "Стоит"], ["jump", "Прыгает"], ["dodge", "Уклоняется"], ["attack", "Бьёт"], ["cpu", "CPU"]]
+var dev := false
+var dev_cubes := false
+var dev_slow := false
+var dev_freeze := false
+var dev_step := false
+var training := false
+var dummy_mode := 0
+var train_pct := 0
 
 
 func _ready() -> void:
@@ -92,16 +102,10 @@ func _ready() -> void:
 	panel_sb = StyleBoxTexture.new()
 	panel_sb.texture = ui.panel
 	panel_sb.set_texture_margin_all(110)
-	for c in Fighter.CHARS:
-		if c.has("sprite"):
-			for an in c.sprite.anims.values():
-				# пиксель-арт без размытия, остальная графика сглаженная
-				var ct := CanvasTexture.new()
-				ct.diffuse_texture = load(an[0])
-				ct.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if c.sprite.get("smooth", false) else CanvasItem.TEXTURE_FILTER_NEAREST
-				textures[an[0]] = ct
-		if c.has("portrait"):
-			textures[c.portrait[0]] = load(c.portrait[0])
+	var err := Fighter.load_chars()
+	if err != "":
+		print("ОШИБКА ДАННЫХ: ", err)
+	_load_char_textures()
 	for set_name in ["selina", "crimson"]:
 		for n in VFX_NAMES:
 			vfx[set_name + "/" + n] = load("res://assets/vfx/%s/%s.png" % [set_name, n])
@@ -162,6 +166,8 @@ func _ready() -> void:
 	if "--autotest" in OS.get_cmdline_user_args():
 		autotest = true
 		vs_cpu = true
+		training = "--training" in OS.get_cmdline_user_args()
+		dev_cubes = "--cubes" in OS.get_cmdline_user_args()
 		for arg in OS.get_cmdline_user_args():
 			if arg.begins_with("--arena="):
 				set_arena(int(arg.get_slice("=", 1)))
@@ -169,9 +175,47 @@ func _ready() -> void:
 		fighters[0].cpu = true
 
 
+func _load_char_textures() -> void:
+	for c in Fighter.CHARS:
+		if c.has("sprite"):
+			for an in c.sprite.anims.values():
+				if textures.has(an[0]) or not ResourceLoader.exists(an[0]):
+					continue
+				# пиксель-арт без размытия, остальная графика сглаженная
+				var ct := CanvasTexture.new()
+				ct.diffuse_texture = load(an[0])
+				ct.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if c.sprite.get("smooth", false) else CanvasItem.TEXTURE_FILTER_NEAREST
+				textures[an[0]] = ct
+		if c.has("portrait") and not textures.has(c.portrait[0]):
+			textures[c.portrait[0]] = load(c.portrait[0])
+
+
+## Перечитать data/chars/*.cfg — новые цифры сразу действуют на арене.
+func reload_data() -> void:
+	var err := Fighter.load_chars()
+	_load_char_textures()
+	toast = "Ошибка: " + err if err != "" else "Данные бойцов перечитаны"
+	toast_t = 300 if err != "" else 120
+	if autotest:
+		print(toast)
+	sfx("block" if err != "" else "tick")
+
+
 # ---------------- цикл ----------------
 
 func _physics_process(_d: float) -> void:
+	var dev_ok := net_mode == "" and state == "fight"
+	Engine.time_scale = 0.25 if dev_slow and dev_ok else 1.0
+	if (dev or training) and net_mode == "" and Engine.get_physics_frames() % 30 == 0 and Fighter.data_changed():
+		reload_data()
+	if dev_freeze and dev_ok and not dev_step:
+		# стоп-кадр: игра стоит, отрисовка без дрожания
+		for f in fighters:
+			f.prev_pos = f.pos
+		cam_prev = cam_pos
+		cam_z_prev = cam_z
+		return
+	dev_step = false
 	frame += 1
 	# запоминаем состояние до тика: отрисовка плавно идёт между прошлым и текущим тиком
 	for f in fighters:
@@ -219,7 +263,9 @@ func tick() -> void:
 	for f in fighters:
 		var inp := {}
 		if countdown <= 0:
-			if f.cpu:
+			if training and f.id == 1:
+				inp = f.dummy_input(other(f), DUMMY_MODES[dummy_mode][0], lvl)
+			elif f.cpu:
 				inp = f.ai_input(other(f), lvl)
 			elif net_mode == "host":
 				inp = read_local() if f.id == 0 else remote_input
@@ -360,6 +406,8 @@ func pad_player(device: int) -> int:
 
 
 func _on_key(k: int) -> void:
+	if _dev_key(k):
+		return
 	match k:
 		KEY_A:
 			_action("left", 0)
@@ -391,6 +439,63 @@ func _on_key(k: int) -> void:
 			_action("back", 0)
 		KEY_R:
 			_action("opt1", 0)
+
+
+## Клавиши режима разработчика (F1–F6) и тренировки (T R - = 0). true — клавиша обработана.
+func _dev_key(k: int) -> bool:
+	var fight := state == "fight" and net_mode == ""
+	match k:
+		KEY_F1:
+			dev = not dev
+		KEY_F2:
+			dev_cubes = not dev_cubes
+		KEY_F3:
+			if not fight:
+				return false
+			dev_slow = not dev_slow
+		KEY_F4:
+			if not fight:
+				return false
+			dev_freeze = not dev_freeze
+		KEY_F5:
+			if not fight:
+				return false
+			dev_freeze = true
+			dev_step = true
+		KEY_F6:
+			if net_mode != "":
+				return false
+			reload_data()
+			return true
+		_:
+			if not (training and fight):
+				return false
+			match k:
+				KEY_T:
+					dummy_mode = (dummy_mode + 1) % DUMMY_MODES.size()
+				KEY_R:
+					for f in fighters:
+						f.spawn(f.start_pos())
+						f.inv = 0
+					projs.clear()
+				KEY_MINUS, KEY_KP_SUBTRACT:
+					_set_train_pct(train_pct - 10)
+				KEY_EQUAL, KEY_KP_ADD:
+					_set_train_pct(train_pct + 10)
+				KEY_0:
+					_set_train_pct(0)
+				_:
+					return false
+	sfx("tick")
+	return true
+
+
+func _set_train_pct(p: int) -> void:
+	train_pct = clampi(p, 0, 300)
+	var d = fighters[1]
+	d.base_pct = train_pct
+	if not d.dead:
+		d.percent = train_pct
 
 
 func _on_pad_button(pl: int, b: int) -> void:
@@ -510,10 +615,12 @@ func _go(st: String) -> void:
 
 func _ui_activate(id: String, dir: int) -> void:
 	match id:
-		"offline":
+		"offline", "training":
+			training = id == "training"
 			_go("menu")
 			_make_previews()
 		"online":
+			training = false
 			lobby_status = ""
 			_go("lobby")
 		"settings":
@@ -759,7 +866,7 @@ func net_state(sn: Array) -> void:
 		f.kos = d[17]
 		f.dmg_dealt = d[18]
 		var k: String = d[15]
-		f.atk = {} if k == "" else {"k": k, "m": Fighter.MOVES[k], "t": d[16], "c": d[19], "hit": [], "air": false}
+		f.atk = {} if k == "" else {"k": k, "m": f.ch.moves[k], "t": d[16], "c": d[19], "hit": [], "air": false}
 	projs = []
 	for p in sn[1]:
 		projs.append({"x": p[0], "y": p[1], "vx": p[2], "col": p[3], "r": p[4], "spin": p[5], "owner": fighters[p[6]], "life": 1})
@@ -822,6 +929,15 @@ func start_match() -> void:
 	projs.clear()
 	parts.clear()
 	countdown = 200
+	dev_freeze = false
+	if training:
+		countdown = 0
+		dev = true
+		fighters[1].cpu = true
+		for f in fighters:
+			f.respawn_inv = 20
+			f.inv = 0
+		_set_train_pct(train_pct)
 	winner = null
 	over_t = 0
 	state = "fight"
@@ -894,10 +1010,11 @@ func ko(f) -> void:
 	var half := vs / 2 / cam_z
 	var p := Vector2(clampf(f.pos.x, cam_pos.x - half.x + 30, cam_pos.x + half.x - 30),
 		clampf(f.pos.y, cam_pos.y - half.y + 30, cam_pos.y + half.y - 30))
-	f.stocks -= 1
+	if not training:
+		f.stocks -= 1  # в тренировке жизни бесконечные
 	f.dead = true
 	f.atk = {}
-	f.respawn = 70
+	f.respawn = 30 if training else 70
 	if f.last_hit >= 0:
 		fighters[f.last_hit].kos += 1
 	burst(p, f.ch.col, 40, 12.0)
@@ -1100,9 +1217,15 @@ func draw_battle(vs: Vector2) -> void:
 		draw_fighter(f, true)
 		f.pos = real
 	draw_parts()
+	if dev:
+		draw_dev_boxes()
 	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 	draw_offscreen(vs)
 	draw_hud(vs)
+	if dev:
+		draw_dev_info(vs)
+	if dev or training:
+		draw_dev_panel()
 	if countdown > 0:
 		var n := ceili(countdown / 60.0) - 1
 		var s := str(n) if n > 0 else "В БОЙ!"
@@ -1115,6 +1238,96 @@ func draw_battle(vs: Vector2) -> void:
 		button(Rect2(vs.x / 2 - 170, vs.y / 2 + 70, 340, 56), "Выйти в меню", "tomenu")
 	if state == "over":
 		draw_over(vs)
+
+
+# ---------------- режим разработчика ----------------
+
+## Рамки: зелёная — хёртбокс (куда бьют), красная — хитбокс (чем бьют), жёлтая — хитбокс на замахе.
+func draw_dev_boxes() -> void:
+	var lw := 2.0 / cam_z
+	for x in [Fighter.BLAST_L, Fighter.BLAST_R]:
+		draw_line(Vector2(x, Fighter.BLAST_T), Vector2(x, Fighter.BLAST_B), Color(0.3, 0.9, 1, 0.5), lw)
+	for y in [Fighter.BLAST_T, Fighter.BLAST_B]:
+		draw_line(Vector2(Fighter.BLAST_L, y), Vector2(Fighter.BLAST_R, y), Color(0.3, 0.9, 1, 0.5), lw)
+	for f in fighters:
+		if f.dead:
+			continue
+		var hb: Rect2 = f.hurtbox()
+		var hc := Color(0.2, 1, 0.3) if f.inv <= 0 and not f.dodging() else Color(0.6, 0.6, 1)
+		draw_rect(hb, Color(hc, 0.18))
+		draw_rect(hb, hc, false, lw)
+		draw_circle(f.pos, 3.0 / cam_z, Color.WHITE)
+		if f.atk.is_empty():
+			continue
+		var b: Rect2 = f.box_of(f.atk.m)
+		if f.is_active():
+			draw_rect(b, Color(1, 0.1, 0.1, 0.35))
+			draw_rect(b, Color(1, 0.2, 0.2), false, lw)
+		elif f.atk.t <= f.atk.m.s:
+			draw_rect(b, Color(1, 0.9, 0.2, 0.7), false, lw)
+
+
+## Над панелью каждого бойца: приём, кадр и фаза, урон и состояние.
+func draw_dev_info(vs: Vector2) -> void:
+	for f in fighters:
+		if f.dead:
+			continue
+		var p := Vector2(vs.x / 2 - 155 if f.id == 0 else vs.x / 2 + 155, vs.y - 108)
+		var lines := []
+		if not f.atk.is_empty():
+			var m: Dictionary = f.atk.m
+			var t: int = f.atk.t
+			var total: int = m.s + m.a + m.e
+			var ph := ["разгон", Color("ffd23d")]
+			if f.charging():
+				ph = ["заряд %d/%d" % [f.atk.c, Fighter.CHARGE_MAX], Color("ffd23d")]
+			elif t > m.s + m.a:
+				ph = ["восстановление", Color("8fb4ff")]
+			elif t > m.s:
+				ph = ["УДАР", Color("ff4040")]
+			lines.append(["%s  %d/%d  %s" % [f.atk.k, t, total, ph[0]], ph[1]])
+		var st := []
+		for v in [["оглушён", f.hitstun], ["замер", f.freeze], ["неуязвим", f.inv], ["уклон", f.dodge_t], ["приземл.", f.land_lag]]:
+			if v[1] > 0:
+				st.append("%s %d" % v)
+		if f.helpless:
+			st.append("беспомощен")
+		lines.append(["%d%%  прыжков %d  %s" % [f.percent, f.jumps, " ".join(st)], Color.WHITE])
+		for i in lines.size():
+			txt(lines[i][0], p + Vector2(0, -i * 22), 17, lines[i][1], HORIZONTAL_ALIGNMENT_CENTER, 4)
+
+
+func draw_dev_panel() -> void:
+	var on := func(b: bool): return "вкл" if b else "выкл"
+	var rows := []
+	if dev:
+		rows.append(["F1  режим разработчика", ""])
+		rows.append(["F2  кубики вместо спрайтов", on.call(dev_cubes)])
+		rows.append(["F3  замедление ×0.25", on.call(dev_slow)])
+		rows.append(["F4  стоп-кадр,  F5  шаг", "СТОП" if dev_freeze else ""])
+		rows.append(["F6  перечитать data/chars", ""])
+	else:
+		rows.append(["F1  режим разработчика", "выкл"])
+	if training:
+		rows.append(["T  манекен", DUMMY_MODES[dummy_mode][1]])
+		rows.append(["-  =  урон манекена (0 — сброс)", "%d%%" % train_pct])
+		rows.append(["R  сброс позиций", ""])
+	var h := 16.0 + rows.size() * 22.0 + (26.0 if training else 0.0)
+	draw_rect(Rect2(12, 12, 360, h), Color(0, 0, 0, 0.6))
+	var y := 34.0
+	if training:
+		txt("ТРЕНИРОВКА", Vector2(24, y + 2), 20, Color("ffd23d"), HORIZONTAL_ALIGNMENT_LEFT)
+		y += 26
+	for r in rows:
+		txt(r[0], Vector2(24, y), 15, Color(1, 1, 1, 0.85), HORIZONTAL_ALIGNMENT_LEFT)
+		txt(r[1], Vector2(360, y), 15, Color("9fe6ff"), HORIZONTAL_ALIGNMENT_RIGHT)
+		y += 22
+
+
+func tag_text(f) -> String:
+	if training and f.id == 1:
+		return "МАНЕКЕН"
+	return "CPU" if f.cpu else "P%d" % (f.id + 1)
 
 
 func draw_toast(vs: Vector2) -> void:
@@ -1182,12 +1395,6 @@ func ellipse(c: Vector2, rx: float, ry: float, col: Color) -> void:
 	draw_colored_polygon(pts, col)
 
 
-func limb(a: Vector2, b: Vector2, col: Color, w: float) -> void:
-	draw_line(a, b, col, w)
-	draw_circle(a, w / 2, col)
-	draw_circle(b, w / 2, col)
-
-
 func draw_fighter(f, tag: bool) -> void:
 	if f.dead:
 		return
@@ -1218,64 +1425,19 @@ func draw_fighter(f, tag: bool) -> void:
 		ellipse(Vector2(x, m.position.y + 2), maxf(6.0, 22.0 - d * 0.04), 5, Color(0, 0, 0, 0.3 * alpha * clampf(1.0 - d / 400.0, 0, 1)))
 
 	var active: bool = f.is_active()
-	if c.has("sprite"):
+	var sprite: bool = c.has("sprite") and not dev_cubes
+	if sprite:
 		_draw_sprite(f, alpha)
 	else:
-		if f.on_ground:
-			var walk := sin(f.anim * 0.35) * minf(1.0, absf(f.vel.x) / 3.0) * 10.0
-			limb(Vector2(x - 7, y - 24), Vector2(x - 7 + walk, y - 3), dk, 9)
-			limb(Vector2(x + 7, y - 24), Vector2(x + 7 - walk, y - 3), dk, 9)
-		else:
-			limb(Vector2(x - 7, y - 24), Vector2(x - 12, y - 9), dk, 9)
-			limb(Vector2(x + 7, y - 24), Vector2(x + 10, y - 7), dk, 9)
-
-		limb(Vector2(x - s * 8, y - 48 + bob), Vector2(x - s * 14, y - 32 + bob), dk, 8)
-		ellipse(Vector2(x, y - 42 + bob), 20, 23, dk)
-		ellipse(Vector2(x, y - 42 + bob), 17, 20, col)
-		ellipse(Vector2(x + s * 4, y - 38 + bob), 9, 11, Color(1, 1, 1, 0.25 * alpha))
-
-		var hc := Vector2(x + s * 2, y - 70 + bob)
-		draw_circle(hc, 16, dk)
-		draw_circle(hc, 13.5, col)
-		match c.acc:
-			"flame":
-				for i in 3:
-					var fx := hc.x - 9 + i * 8 - s * 3
-					var fl := 12.0 + sin(f.anim * 0.4 + i) * 4.0
-					draw_colored_polygon(PackedVector2Array([Vector2(fx - 5, hc.y - 9), Vector2(fx + 5, hc.y - 9), Vector2(fx - s * 4, hc.y - 9 - fl)]), Color(1, 0.85 - i * 0.15, 0.2, alpha))
-			"band":
-				draw_rect(Rect2(hc.x - 14, hc.y - 8, 28, 6), Color(0.9, 0.15, 0.2, alpha))
-				var tail := Vector2(hc.x - s * 14, hc.y - 5)
-				limb(tail, tail + Vector2(-s * 14, 4 + sin(f.anim * 0.3) * 5), Color(0.9, 0.15, 0.2, alpha), 4)
-			"helmet":
-				draw_rect(Rect2(hc.x - 16, hc.y - 17, 32, 10), dk)
-				draw_rect(Rect2(hc.x - 3, hc.y - 22, 6, 6), dk)
-			"moon":
-				var tip := hc + Vector2(-s * 4, -26)
-				draw_line(hc + Vector2(0, -12), tip, dk, 3)
-				draw_circle(tip, 6, Color(1, 0.95, 0.6, alpha))
-				draw_circle(tip + Vector2(s * 3, -2), 5, col)
-
-		if f.hitstun > 0 or f.stun > 0:
-			var e := Vector2(x + s * 7, y - 72 + bob)
-			draw_line(e + Vector2(-4, -4), e + Vector2(4, 4), Color(0, 0, 0, alpha), 2.5)
-			draw_line(e + Vector2(-4, 4), e + Vector2(4, -4), Color(0, 0, 0, alpha), 2.5)
-		else:
-			draw_circle(Vector2(x + s * 7, y - 72 + bob), 4.8, Color(1, 1, 1, alpha))
-			draw_circle(Vector2(x + s * 8.6, y - 72 + bob), 2.3, Color(0.05, 0.05, 0.1, alpha))
-
-		var sh := Vector2(x + s * 6, y - 48 + bob)
-		var hand := sh + Vector2(s * 14, 14 + sin(f.anim * 0.1) * 2)
-		if active:
-			hand = sh + (f.box_of(f.atk.m).get_center() - sh).limit_length(34)
-		elif not f.atk.is_empty() and f.atk.t <= f.atk.m.s:
-			hand = sh + Vector2(-s * 12, -6)
-		limb(sh, hand, dk, 8)
-		draw_circle(hand, 6.5, col)
+		# «кубик»: прямоугольник по хёртбоксу, полоска показывает, куда смотрит боец
+		var hb: Rect2 = f.hurtbox()
+		draw_rect(hb, col)
+		draw_rect(hb, dk, false, 3.0)
+		draw_rect(Rect2(x + (4 if s > 0 else -16), y - 66, 12, 6), dk)
 
 	if active:
 		var b: Rect2 = f.box_of(f.atk.m)
-		var k := 0.4 if c.has("sprite") else 1.0
+		var k := 0.4 if sprite else 1.0
 		ellipse(b.get_center(), b.size.x / 2, b.size.y / 2, Color(c.col, 0.35 * k))
 		ellipse(b.get_center(), b.size.x / 3, b.size.y / 3, Color(1, 1, 1, 0.3 * k))
 	if f.charging():
@@ -1288,7 +1450,7 @@ func draw_fighter(f, tag: bool) -> void:
 		var tc: Color = PCOL[f.id]
 		var ty := y - 104 + bob
 		draw_colored_polygon(PackedVector2Array([Vector2(x - 6, ty + 4), Vector2(x + 6, ty + 4), Vector2(x, ty + 11)]), tc)
-		txt("CPU" if f.cpu else "P%d" % (f.id + 1), Vector2(x, ty), 16, tc, HORIZONTAL_ALIGNMENT_CENTER, 4)
+		txt(tag_text(f), Vector2(x, ty), 16, tc, HORIZONTAL_ALIGNMENT_CENTER, 4)
 
 
 func _draw_sprite(f, alpha: float) -> void:
@@ -1398,7 +1560,10 @@ func draw_hud(vs: Vector2) -> void:
 			draw_circle(pc + Vector2(6, -4), 5, Color.WHITE)
 			draw_circle(pc + Vector2(8, -4), 2.5, Color.BLACK)
 		txt(f.ch.name.to_upper(), Vector2(px + 86, py + 32), 20, Color.WHITE, HORIZONTAL_ALIGNMENT_LEFT)
-		txt("CPU" if f.cpu else "P%d" % (f.id + 1), Vector2(px + w - 12, py + 30), 15, PCOL[f.id], HORIZONTAL_ALIGNMENT_RIGHT)
+		txt(tag_text(f), Vector2(px + w - 12, py + 30), 15, PCOL[f.id], HORIZONTAL_ALIGNMENT_RIGHT)
+		if training:
+			txt("∞", Vector2(px + 90, py + 68), 24, f.ch.col, HORIZONTAL_ALIGNMENT_LEFT)
+			continue
 		for i in f.stocks:
 			var sc := Vector2(px + 96 + i * 22, py + 56)
 			draw_circle(sc, 8, Color.BLACK)
@@ -1486,9 +1651,9 @@ func button(r: Rect2, label: String, id: String, value := "") -> void:
 func draw_title(vs: Vector2) -> void:
 	draw_cover(vs, 0.0)
 	var cx := vs.x / 2
-	var items := [["Играть оффлайн", "offline"], ["Играть онлайн", "online"], ["Настройки", "settings"], ["Выход", "exit"]]
+	var items := [["Играть оффлайн", "offline"], ["Тренировка", "training"], ["Играть онлайн", "online"], ["Настройки", "settings"], ["Выход", "exit"]]
 	for i in items.size():
-		button(Rect2(cx - 200, vs.y * 0.42 + i * 76, 400, 62), items[i][0], items[i][1])
+		button(Rect2(cx - 200, vs.y * 0.38 + i * 72, 400, 58), items[i][0], items[i][1])
 
 
 func draw_settings(vs: Vector2) -> void:
@@ -1585,6 +1750,8 @@ func draw_portrait(pf, c: Vector2, r: float) -> void:
 func slot_label(i: int) -> String:
 	if net_mode != "":
 		return "ВЫ" if i == my_slot else "СОПЕРНИК"
+	if i == 1 and training:
+		return "МАНЕКЕН"
 	if i == 1 and vs_cpu:
 		return "CPU"
 	return "P%d" % (i + 1)
@@ -1751,8 +1918,10 @@ func draw_select(vs: Vector2) -> void:
 	draw_rect(Rect2(0, 0, vs.x, 60), Color(0.03, 0.01, 0.03, 0.92))
 	draw_rect(Rect2(0, 59, vs.x, 1), Color("e0245e"))
 	txt("Esc / B — назад", Vector2(20, 37), 17, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_LEFT)
-	var chips := [["Арена: " + ARENAS[arena].name, "Q E", can_edit], ["Жизни: %d" % stocks, "W S", can_edit]]
-	if not online:
+	var chips := [["Арена: " + ARENAS[arena].name, "Q E", can_edit]]
+	if not training:
+		chips.append(["Жизни: %d" % stocks, "W S", can_edit])
+	if not online and not training:
 		chips.append(["Соперник: " + ("CPU" if vs_cpu else "Игрок 2"), "C", true])
 		if vs_cpu:
 			chips.append(["Сложность: " + LVL_NAMES[lvl], "V", true])
@@ -1762,7 +1931,7 @@ func draw_select(vs: Vector2) -> void:
 	var x := cx - total_w / 2
 	for c in chips:
 		x += chip(x, 12, c[0], c[1], c[2]) + 12
-	txt("ОНЛАЙН" if online else "ВЫБОР БОЙЦА", Vector2(cx, 112), 32, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, 8)
+	txt("ОНЛАЙН" if online else ("ТРЕНИРОВКА" if training else "ВЫБОР БОЙЦА"), Vector2(cx, 112), 32, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, 8)
 
 	var blink := 0.6 + 0.4 * sin(frame * 0.1)
 	var py: float = cells[total - 1].y + r + 70
